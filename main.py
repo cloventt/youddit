@@ -76,12 +76,26 @@ def create_youtube_client():
 
 
 def get_current_playlist_videos(playlist_id: str, youtube_client) -> Set[str]:
-    api_call = youtube_client.playlistItems().list(
+    values = set()
+    first_call = youtube_client.playlistItems().list(
         part="contentDetails",
-        maxResults=25,
+        maxResults=50,
         playlistId=playlist_id
     ).execute()
-    return {video["contentDetails"]["videoId"] for video in api_call["items"]}
+    values.update({video["contentDetails"]["videoId"] for video in first_call["items"]})
+    next_page_token = first_call.get("nextPageToken")
+    while next_page_token:
+        api_call = youtube_client.playlistItems().list(
+            part="contentDetails",
+            maxResults=50,
+            playlistId=playlist_id,
+            pageToken=next_page_token,
+        ).execute()
+        values.update({video["contentDetails"]["videoId"] for video in api_call["items"]})
+        next_page_token = api_call.get("nextPageToken")
+        print("getting page")
+        time.sleep(1)
+    return values
 
 
 def insert_playlist_videos(playlist_id: str, video_id: str, youtube_client):
@@ -118,11 +132,11 @@ def build_playlist(playlist_id: str, subreddit: str, youtube_client, reddit_clie
 
     for video in submissions_to_add:
         log.info(f"Adding video '{video}' to playlist")
-        insert_playlist_videos(playlist_id, video, youtube_client)
+        #insert_playlist_videos(playlist_id, video, youtube_client)
     log.info("Finished adding videos")
 
 
 if __name__ == '__main__':
     reddit = create_reddit_client()
     youtube = create_youtube_client()
-    build_playlist("PLHpihp9SFjsbeglzDoGp4NWs2BIa6xebc", "youtubehaiku", youtube, reddit)
+    build_playlist("PLHpihp9SFjsasQ-VNyQYL4GorCijAL7oy", "youtubehaiku", youtube, reddit)
