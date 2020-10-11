@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "Building and running via Docker, this may take a minute"
+docker run --volume ~/.config/youddit:/config:rw $(docker build -q $(dirname "$0")) --conf-dir /config "$@"
