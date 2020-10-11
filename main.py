@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Set
 
+import click
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
 import googleapiclient.errors
@@ -18,25 +19,34 @@ import praw
 REDDIT_UA = "python:com.cloventt.r2y_scraper:2.0.0 (by /u/cloventt)"
 CONFIG_DIR = Path("~/.config/youddit/").expanduser()
 MAX_VIDEOS = 20
+SEARCH_TYPE = "hot"
+SEARCH_OPTIONS = ['hot', 'new', 'top', 'controversial', 'rising']
 
 log.getLogger().setLevel(log.INFO)
-log.getLogger('googleapicliet.discovery_cache').setLevel(log.ERROR)
+log.getLogger('googleapiclient.discovery_cache').setLevel(log.ERROR)
 
 
 def reddit_retrieve_submissions(subreddit_name: str, reddit_client: praw.Reddit) -> Set[str]:
     """Returns a list of submission URLs from your chosen subreddit."""
-    submissions = set()
+    output_submissions = set()
     youtube_re = \
         r'^((?:https?:)?\/\/)?((?:www|m)\.)?((?:youtube\.com|youtu.be))(\/(?:[\w\-]+\?v=|embed\/|v\/)?)([\w\-]+)(\S+)?$'
 
-    log.info("Retrieving URLS from subreddit: " + subreddit_name)
+    log.info("Retrieving URLS from subreddit: %s", subreddit_name)
     # get the list of hot submissions from this subreddit
-    for submission_object in reddit_client.subreddit(subreddit_name).hot(limit=MAX_VIDEOS):
+    subreddit = reddit_client.subreddit(subreddit_name)
+    submissions = subreddit.top(limit=MAX_VIDEOS) if SEARCH_TYPE == "top" else \
+        subreddit.new(limit=MAX_VIDEOS) if SEARCH_TYPE == "new" else \
+        subreddit.controversial(limit=MAX_VIDEOS) if SEARCH_TYPE == "controversial" else \
+        subreddit.rising(limit=MAX_VIDEOS) if SEARCH_TYPE == "rising" else \
+        subreddit.hot(limit=MAX_VIDEOS)
+
+    for submission_object in submissions:
         match = re.match(youtube_re, submission_object.url)
         if match:
-            submissions.add(match.group(5))
-    log.info(f"Retrieved {len(submissions)} URLs from subreddit: {subreddit_name}")
-    return submissions
+            output_submissions.add(match.group(5))
+    log.info(f"Retrieved {len(output_submissions)} URLs from subreddit: {subreddit_name}")
+    return output_submissions
 
 
 def create_reddit_client() -> praw.Reddit:
@@ -44,7 +54,7 @@ def create_reddit_client() -> praw.Reddit:
     try:
         with open(creds_file, "r") as reddit_creds_file:
             creds = json.load(reddit_creds_file)
-            log.info("Using reddit CLIENT_ID: ", creds["clientId"])
+            log.debug("Using reddit CLIENT_ID: %s", creds["clientId"])
 
         client = praw.Reddit(user_agent=REDDIT_UA,
                              client_id=creds["clientId"],
@@ -82,7 +92,7 @@ def get_current_playlist_videos(playlist_id: str, youtube_client) -> Set[str]:
         maxResults=50,
         playlistId=playlist_id
     ).execute()
-    values.update({video["contentDetails"]["videoId"] for video in first_call["items"]})
+    values |= {video["contentDetails"]["videoId"] for video in first_call["items"]}
     next_page_token = first_call.get("nextPageToken")
     while next_page_token:
         api_call = youtube_client.playlistItems().list(
@@ -91,10 +101,10 @@ def get_current_playlist_videos(playlist_id: str, youtube_client) -> Set[str]:
             playlistId=playlist_id,
             pageToken=next_page_token,
         ).execute()
-        values.update({video["contentDetails"]["videoId"] for video in api_call["items"]})
+        values |= {video["contentDetails"]["videoId"] for video in api_call["items"]}
         next_page_token = api_call.get("nextPageToken")
         print("getting page")
-        time.sleep(1)
+        time.sleep(0.5)
     return values
 
 
@@ -113,7 +123,7 @@ def insert_playlist_videos(playlist_id: str, video_id: str, youtube_client):
                 }
             }
         ).execute()
-        time.sleep(2)
+        time.sleep(0.5)
     except googleapiclient.errors.HttpError as e:
         log.warning(f"Failed to add '{video_id}' to playlist: {e}")
         if e.resp.status == 403 and 'quota' in e._get_reason().strip():
@@ -132,11 +142,25 @@ def build_playlist(playlist_id: str, subreddit: str, youtube_client, reddit_clie
 
     for video in submissions_to_add:
         log.info(f"Adding video '{video}' to playlist")
-        #insert_playlist_videos(playlist_id, video, youtube_client)
+        insert_playlist_videos(playlist_id, video, youtube_client)
     log.info("Finished adding videos")
 
 
-if __name__ == '__main__':
+@click.command()
+@click.option('-p', '--playlist-id', required=True)
+@click.option('-s', '--subreddit', required=True)
+@click.option('-m', '--max-videos', required=False, default=20)
+@click.option('-c', '--conf-dir', required=False, default="~/.config/youddit/")
+@click.option('-o', '--order', required=False, type=click.Choice(SEARCH_OPTIONS), default="hot")
+def run(playlist_id, subreddit, max_videos, conf_dir, order):
+    global MAX_VIDEOS, CONFIG_DIR, SEARCH_TYPE  # there's better ways to do this but this is faster
+    MAX_VIDEOS = max_videos
+    CONFIG_DIR = Path(conf_dir).expanduser()
+    SEARCH_TYPE = order
     reddit = create_reddit_client()
     youtube = create_youtube_client()
-    build_playlist("PLHpihp9SFjsasQ-VNyQYL4GorCijAL7oy", "youtubehaiku", youtube, reddit)
+    build_playlist(playlist_id, subreddit, youtube, reddit)
+
+
+if __name__ == '__main__':
+    run()
